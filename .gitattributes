@@ -1,0 +1,12 @@
+# Recorded SHA-256 values in the review assets are computed over LF bytes, and
+# self_check fails every hash comparison when a Windows checkout rewrites them
+# to CRLF. Pin the working tree to LF so a clone behaves the same on every OS.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.xlsx binary
+*.zip binary

@@ -2,6 +2,7 @@
 """Synthetic behavioral checks. No real drawings, human signoffs, models or network calls."""
 import copy
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -19,6 +20,21 @@ BUNDLE=HERE.parents[2]
 def sample(complete=False):
     filename='example-complete.json' if complete else 'example-review.json'
     return json.loads((ASSETS/filename).read_text(encoding='utf-8'))
+
+def make_link(link,target):
+    """Directory link: symlink where allowed, junction on unprivileged Windows.
+
+    Windows refuses symlinks without SeCreateSymbolicLinkPrivilege (WinError
+    1314), but mklink /J needs no privilege and is redirect enough to exercise
+    the root-containment checks.
+    """
+    try:
+        link.symlink_to(target,target_is_directory=True)
+        return
+    except (OSError,NotImplementedError):
+        if os.name!='nt':
+            raise
+    subprocess.run(['cmd','/c','mklink','/J',str(link),str(target)],check=True,capture_output=True)
 
 class ReviewChecks(unittest.TestCase):
     def check(self,d,verify=True,root=ASSETS):
@@ -257,12 +273,13 @@ class ReviewChecks(unittest.TestCase):
         d=sample(); d['sources'][0]['path']='../SKILL.md'
         self.assertInvalid(d,'escapes the authorized root')
 
-    def test_symlink_source_outside_root_is_rejected(self):
+    def test_link_source_outside_root_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)/'root'; root.mkdir()
-            outside=Path(tmp)/'other.txt'; outside.write_text('outside')
-            (root/'synthetic-input.txt').symlink_to(outside)
-            r=self.check(sample(),root=root)
+            outside=Path(tmp)/'outside'; outside.mkdir(); (outside/'other.txt').write_text('outside',encoding='utf-8')
+            make_link(root/'linked',outside)
+            d=sample(); d['sources'][0]['path']='linked/other.txt'
+            r=self.check(d,root=root)
             self.assertFalse(r['schema_valid'])
             self.assertTrue(any('escapes' in e for e in r['errors']))
 
@@ -273,15 +290,17 @@ class ReviewChecks(unittest.TestCase):
             self.assertFalse(r['schema_valid'])
 
 class ToolChecks(unittest.TestCase):
-    def test_inventory_hashes_expected_file_and_skips_symlink(self):
+    def test_inventory_skips_links_that_leave_the_root(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp); (root/'sheet.txt').write_bytes(b'123')
-            (root/'link.txt').symlink_to(root/'sheet.txt')
+            root=Path(tmp)/'root'; root.mkdir(); (root/'sheet.txt').write_bytes(b'123')
             (root/'.secret.txt').write_text('private metadata')
+            outside=Path(tmp)/'outside'; outside.mkdir(); (outside/'secret.txt').write_bytes(b'outside')
+            make_link(root/'linked',outside)
             result=inventory(root)
-            self.assertEqual(len(result['files']),1)
+            self.assertEqual([item['path'] for item in result['files']],['sheet.txt'])
             self.assertEqual(result['files'][0]['sha256'],'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3')
-            self.assertEqual(result['skipped'][0]['reason'],'symlink')
+            self.assertEqual([item['path'] for item in result['skipped']],['linked'])
+            self.assertIn(result['skipped'][0]['reason'],{'symlink','outside_root'})
 
     def test_cli_gate_exit_codes(self):
         for filename,expected in [('example-review.json',3),('example-complete.json',0)]:

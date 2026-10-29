@@ -17,6 +17,18 @@ def file_hash(path):
             h.update(chunk)
     return h.hexdigest()
 
+def inside_root(path, root):
+    """True only when the entry really lives under the authorized root.
+
+    is_symlink() is not enough: a Windows junction or a mount point redirects
+    elsewhere without being reported as a symlink, so the walk would hash files
+    that the reviewer never authorized.
+    """
+    try:
+        return path.resolve(strict=True).is_relative_to(root)
+    except OSError:
+        return False
+
 def inventory(root, output=None):
     root = Path(root).resolve(strict=True)
     if not root.is_dir():
@@ -27,6 +39,8 @@ def inventory(root, output=None):
             relative = p.relative_to(root).as_posix()
             if p.is_symlink():
                 skipped.append({'path': relative, 'reason': 'symlink'})
+            elif not inside_root(p, root):
+                skipped.append({'path': relative, 'reason': 'outside_root'})
             elif p.name.startswith('.') or p.name in IGNORED:
                 continue
             elif p.is_dir():
